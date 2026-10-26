@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include "AOTRemovableFeature.h"
 #include "ExecutableInfo.h"
 #include "Lexer.h"
 #include "ModuleScopeData.h"
@@ -1801,7 +1802,8 @@ private:
     template <class TreeBuilder> TreeStatement parseStatementListItem(TreeBuilder&, const Identifier*& directive, unsigned* directiveLiteralLength);
     template <class TreeBuilder> TreeStatement parseStatement(TreeBuilder&, const Identifier*& directive, unsigned* directiveLiteralLength = nullptr);
     enum class ExportType { Exported, NotExported };
-    template <class TreeBuilder> TreeStatement parseClassDeclaration(TreeBuilder&, ExportType = ExportType::NotExported, DeclarationDefaultContext = DeclarationDefaultContext::Standard);
+    template <class TreeBuilder> TreeStatement parseClassDeclaration(TreeBuilder&, ExportType = ExportType::NotExported, DeclarationDefaultContext = DeclarationDefaultContext::Standard, StructKind = StructKind::None);
+    template <class TreeBuilder> bool matchStructDeclaration(TreeBuilder&, StructKind&);
     enum class FunctionDeclarationType { Declaration, Statement };
     template <class TreeBuilder> TreeStatement parseFunctionDeclaration(TreeBuilder&, FunctionDeclarationType = FunctionDeclarationType::Declaration, ExportType = ExportType::NotExported, DeclarationDefaultContext = DeclarationDefaultContext::Standard, std::optional<int> functionConstructorParametersEndPosition = std::nullopt);
     template <class TreeBuilder> TreeStatement parseFunctionDeclarationStatement(TreeBuilder&, bool parentAllowsFunctionDeclarationAsStatement);
@@ -2152,6 +2154,8 @@ private:
     bool m_isInsideOrdinaryFunction;
     bool m_seenTaggedTemplateInNonReparsingFunctionMode { false };
     bool m_seenPrivateNameUse { false };
+    // Where the `shared` of the shared struct declaration that is being parsed starts: its source text starts there.
+    std::optional<unsigned> m_sharedStructKeywordStart;
     bool m_seenArgumentsDotLength { false };
     // offset 192; too rarely touched for grouping to pay.
     ParserArena m_parserArena;
@@ -2277,7 +2281,7 @@ std::unique_ptr<ParsedNode> Parser<LexerType>::parse(ParserError& error, const I
 }
 
 template <class ParsedNode>
-std::unique_ptr<ParsedNode> parse(
+NEVER_INLINE std::unique_ptr<ParsedNode> parse(
     VM& vm, const SourceCode& source,
     const Identifier& name, ImplementationVisibility implementationVisibility, JSParserBuiltinMode builtinMode,
     LexicallyScopedFeatures lexicallyScopedFeatures, JSParserScriptMode scriptMode, SourceParseMode parseMode, FunctionMode functionMode, SuperBinding superBinding,
@@ -2289,6 +2293,7 @@ std::unique_ptr<ParsedNode> parse(
     const FixedVector<UnlinkedFunctionExecutable::ClassElementDefinition>* classElementDefinitions = nullptr,
     bool isInsideOrdinaryFunction = false)
 {
+    JSC_REMOVABLE_DEFINITION(Interpreter, parse<ParsedNode>);
     ASSERT(!source.provider()->source().isNull());
 
     MonotonicTime before;
@@ -2324,7 +2329,7 @@ std::unique_ptr<ParsedNode> parse(
 }
 
 template <class ParsedNode>
-std::unique_ptr<ParsedNode> parseRootNode(
+NEVER_INLINE std::unique_ptr<ParsedNode> parseRootNode(
     VM& vm, const SourceCode& source,
     ImplementationVisibility implementationVisibility, JSParserBuiltinMode builtinMode,
     LexicallyScopedFeatures lexicallyScopedFeatures, JSParserScriptMode scriptMode, SourceParseMode parseMode,
@@ -2332,6 +2337,7 @@ std::unique_ptr<ParsedNode> parseRootNode(
     ConstructorKind constructorKindForTopLevelFunctionExpressions = ConstructorKind::None,
     DebuggerParseData* debuggerParseData = nullptr)
 {
+    JSC_REMOVABLE_DEFINITION(Interpreter, parseRootNode<ParsedNode>);
     static_assert(std::is_same_v<ParsedNode, ProgramNode> || std::is_same_v<ParsedNode, ModuleProgramNode>);
     ASSERT(!source.provider()->source().isNull());
 
@@ -2365,8 +2371,9 @@ std::unique_ptr<ParsedNode> parseRootNode(
     return result;
 }
 
-inline std::unique_ptr<ProgramNode> parseFunctionForFunctionConstructor(VM& vm, const SourceCode& source, LexicallyScopedFeatures lexicallyScopedFeatures, ParserError& error, std::optional<int> functionConstructorParametersEndPosition)
+NEVER_INLINE inline std::unique_ptr<ProgramNode> parseFunctionForFunctionConstructor(VM& vm, const SourceCode& source, LexicallyScopedFeatures lexicallyScopedFeatures, ParserError& error, std::optional<int> functionConstructorParametersEndPosition)
 {
+    JSC_REMOVABLE_DEFINITION(Interpreter, parseFunctionForFunctionConstructor);
     ASSERT(!source.provider()->source().isNull());
 
     MonotonicTime before;

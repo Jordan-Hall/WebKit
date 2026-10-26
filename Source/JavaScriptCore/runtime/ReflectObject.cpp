@@ -26,12 +26,18 @@
 #include "config.h"
 #include "ReflectObject.h"
 
+#include "Interpreter.h"
 #include "JSCInlines.h"
+#include "JSSharedStruct.h"
 #include "ObjectConstructor.h"
+#include "VMInlines.h"
+#include <wtf/StackPointer.h>
 
 namespace JSC {
 
+static JSC_DECLARE_HOST_FUNCTION(reflectObjectCanBeShared);
 static JSC_DECLARE_HOST_FUNCTION(reflectObjectDefineProperty);
+static JSC_DECLARE_HOST_FUNCTION(reflectObjectDeleteProperty);
 static JSC_DECLARE_HOST_FUNCTION(reflectObjectGetOwnPropertyDescriptor);
 static JSC_DECLARE_HOST_FUNCTION(reflectObjectGetPrototypeOf);
 static JSC_DECLARE_HOST_FUNCTION(reflectObjectIsExtensible);
@@ -59,7 +65,7 @@ const ClassInfo ReflectObject::s_info = { "Reflect"_s, &Base::s_info, &reflectOb
     apply                    JSBuiltin                             DontEnum|Function 3
     construct                initializeReflectConstructFunction    DontEnum|PropertyCallback
     defineProperty           reflectObjectDefineProperty           DontEnum|Function 3
-    deleteProperty           JSBuiltin                             DontEnum|Function 2
+    deleteProperty           reflectObjectDeleteProperty           DontEnum|Function 2
     get                      JSBuiltin                             DontEnum|Function 2
     getOwnPropertyDescriptor reflectObjectGetOwnPropertyDescriptor DontEnum|Function 2
     getPrototypeOf           reflectObjectGetPrototypeOf           DontEnum|Function 1 ReflectGetPrototypeOfIntrinsic
@@ -77,11 +83,20 @@ ReflectObject::ReflectObject(VM& vm, Structure* structure)
 {
 }
 
-void ReflectObject::finishCreation(VM& vm, JSGlobalObject*)
+void ReflectObject::finishCreation(VM& vm, JSGlobalObject* globalObject)
 {
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
     JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+
+    if (Options::useStructs())
+        putDirectNativeFunctionWithoutTransition(vm, globalObject, Identifier::fromString(vm, "canBeShared"_s), 1, reflectObjectCanBeShared, ImplementationVisibility::Public, NoIntrinsic, static_cast<unsigned>(PropertyAttribute::DontEnum));
+}
+
+// https://github.com/tc39/proposal-structs
+JSC_DEFINE_HOST_FUNCTION(reflectObjectCanBeShared, (JSGlobalObject* globalObject, CallFrame* callFrame))
+{
+    return JSValue::encode(jsBoolean(canBeShared(globalObject->vm(), callFrame->argument(0))));
 }
 
 // ------------------------------ Functions --------------------------------
@@ -112,17 +127,35 @@ JSC_DEFINE_HOST_FUNCTION(reflectObjectConstruct, (JSGlobalObject* globalObject, 
     if (!argumentsObject)
         return JSValue::encode(throwTypeError(globalObject, scope, "Reflect.construct requires the second argument be an object"_s));
 
-    forEachInArrayLike(globalObject, argumentsObject, [&] (JSValue value) -> bool {
-        arguments.append(value);
-        return true;
-    });
-    RETURN_IF_EXCEPTION(scope, (arguments.overflowCheckNotNeeded(), encodedJSValue()));
+#if ENABLE(AOT)
+    // Bytecode spreads the list of `Reflect.construct(f, list)` itself, and throws before it reads an element of a list that does not fit the stack. Compiled code calls this function.
+    if (vm.hasCompiledCode()) {
+        uint64_t length = toLength(globalObject, argumentsObject);
+        RETURN_IF_EXCEPTION(scope, (arguments.overflowCheckNotNeeded(), encodedJSValue()));
+        if (length > maxArguments || !vm.ensureJSStackCapacityFor(static_cast<Register*>(currentStackPointer()) - length)) [[unlikely]] {
+            arguments.overflowCheckNotNeeded();
+            throwStackOverflowError(globalObject, scope);
+            return encodedJSValue();
+        }
+        for (uint64_t index = 0; index < length; ++index) {
+            arguments.append(argumentsObject->getIndex(globalObject, index));
+            RETURN_IF_EXCEPTION(scope, (arguments.overflowCheckNotNeeded(), encodedJSValue()));
+        }
+    } else
+#endif
+    {
+        forEachInArrayLike(globalObject, argumentsObject, [&] (JSValue value) -> bool {
+            arguments.append(value);
+            return true;
+        });
+        RETURN_IF_EXCEPTION(scope, (arguments.overflowCheckNotNeeded(), encodedJSValue()));
+    }
     if (arguments.hasOverflowed()) [[unlikely]] {
         throwOutOfMemoryError(globalObject, scope);
         return encodedJSValue();
     }
 
-    RELEASE_AND_RETURN(scope, JSValue::encode(construct(globalObject, target, constructData, arguments, newTarget)));
+    RELEASE_AND_RETURN(scope, JSValue::encode(constructAllowingPrimitiveResult(globalObject, target, constructData, arguments, newTarget)));
 }
 
 // https://tc39.github.io/ecma262/#sec-reflect.defineproperty
@@ -241,8 +274,30 @@ JSC_DEFINE_HOST_FUNCTION(reflectObjectSet, (JSGlobalObject* globalObject, CallFr
 
     // Do not raise any readonly errors that happen in strict mode.
     bool shouldThrowIfCantSet = false;
-    PutPropertySlot slot(receiver, shouldThrowIfCantSet);
+    // A store under an index takes no slot along, so nothing would say further on that it is Reflect who asks.
+    if (receiver == target && parseIndex(propertyName) && targetObject->structure()->hasImmutableIndexedProperties()) [[unlikely]]
+        return JSValue::encode(jsBoolean(false));
+    PutPropertySlot slot(receiver, shouldThrowIfCantSet, PutPropertySlot::ReflectSet);
     RELEASE_AND_RETURN(scope, JSValue::encode(jsBoolean(targetObject->methodTable()->put(targetObject, globalObject, propertyName, callFrame->argument(2), slot))));
+}
+
+// https://tc39.github.io/ecma262/#sec-reflect.deleteproperty
+JSC_DEFINE_HOST_FUNCTION(reflectObjectDeleteProperty, (JSGlobalObject* globalObject, CallFrame* callFrame))
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    JSValue target = callFrame->argument(0);
+    if (!target.isObject())
+        return JSValue::encode(throwTypeError(globalObject, scope, "Reflect.deleteProperty requires the first argument be an object"_s));
+    JSObject* targetObject = asObject(target);
+
+    auto propertyName = callFrame->argument(1).toPropertyKey(globalObject);
+    RETURN_IF_EXCEPTION(scope, encodedJSValue());
+
+    DeletePropertySlot slot;
+    slot.setAnswersRefusal();
+    RELEASE_AND_RETURN(scope, JSValue::encode(jsBoolean(targetObject->methodTable()->deleteProperty(targetObject, globalObject, propertyName, slot))));
 }
 
 // https://tc39.github.io/ecma262/#sec-reflect.setprototypeof

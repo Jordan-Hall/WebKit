@@ -79,6 +79,8 @@
 #include "JSMap.h"
 #include "JSMapIterator.h"
 #include "JSModuleNamespaceObject.h"
+#include "JSSharedArray.h"
+#include "JSSharedStruct.h"
 #include "JSModuleRecord.h"
 #include "JSNativeStdFunction.h"
 #include "JSPromise.h"
@@ -128,6 +130,12 @@
 #include "WebAssemblyFunction.h"
 #include "WebAssemblyModuleRecord.h"
 #include "WebAssemblyWrapperFunction.h"
+
+#if ENABLE(AOT)
+#include "AOTCompiledStructure.h"
+#include "AOTModuleRecord.h"
+#include "AOTStringBuilderStorage.h"
+#endif
 
 #if JSC_OBJC_API_ENABLED
 #include "ObjCCallbackFunction.h"
